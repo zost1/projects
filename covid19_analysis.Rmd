@@ -1,0 +1,242 @@
+---
+title: "COVID-19 Data Analysis"
+author: "Zach Ost"
+date: "6/7/2025"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+# Overview
+
+This markdown file loads, transforms, and analyzes COVID-19 data from: <https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/>. The primary purpose is to demonstrate proficiency with R programming, the use of R markdown documents, the knitting feature of these documents, and a general ability to transform and analyze data to extract meaning from it.
+
+Some of the major questions I hope to answer are:
+
+- What state had the most cases per capita?
+- Does a positive linear relationship exist between cases and deaths?
+- Does this relationship appear different for the states with the most and least deaths?
+
+
+In addition, a linear regression model has been created to attempt to predict deaths based on cases and State/Region.
+
+More information on this data set can be found at <https://github.com/CSSEGISandData/COVID-19/tree/master>.
+
+R packages needed for this analysis:
+
+- library(tidyverse)
+- library(lubridate)
+
+# Methods
+
+- Exploratory data analysis to create descriptive statistics and visualization
+- Linear regression model used to predict deaths
+
+# Bias Considerations
+One area of bias likely present in this data is related to reporting bias. This is where individuals may not be included in the case counts if they actually had COVID-19, but did not choose to get tested and therefore reported by the state authorities. The impact on the analysis is that were most likely more cases per capita than shown. The under reporting could have also differed by state as well, but further reserch would be needed to fully understand this impact.
+
+# Conclusions
+
+Rhode Island had the highest cases per capita, followed by Alaska and Kentucky. One interesting result shown with respect to these states is that Alaska had a much lower number of deaths as a percent of cases. This may be related to lifestyle factors or different vaccination rates, etc. but would need to be researched further. The relationship between cases and deaths is positive as shown by the linear model summaries. Each state appears to have slightly different impacts on the regression, however visually, this difference appears to be negligable meaning that the number of deaths increase with the number of cases at generally the same rate.
+
+# Analysis
+
+### Read in Covid data
+```{r covid, echo=TRUE}
+
+library(tidyverse)
+library(lubridate)
+
+base_url = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/'
+pop_url = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv'
+
+us_confirmed_file = 'time_series_covid19_confirmed_US.csv'
+us_deaths_file = 'time_series_covid19_deaths_US.csv'
+
+files = c(us_confirmed_file, us_deaths_file)
+
+urls = str_c(base_url, files)
+
+us_confirmed = read_csv(urls[1])
+us_deaths = read_csv(urls[2])
+
+pop = read_csv(pop_url)
+
+```
+
+### Review data types and fields
+```{r}
+head(us_confirmed)
+head(us_deaths)
+
+```
+
+### Fix data types, transform, clean, and create helpful fields
+```{r covid_clean, echo=TRUE}
+state_pop = pop %>%
+  filter(Country_Region == 'US', is.na(Admin2)) %>% drop_na(Population, Province_State) %>%
+  select(Province_State, Population)
+
+us_confirmed_cln = us_confirmed %>%
+  pivot_longer( cols = -c(UID:Combined_Key),
+                names_to = 'date',
+                values_to = 'cases') %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases=sum(cases)) %>%
+  select(Province_State, Country_Region, date, cases) %>%
+  mutate(date = mdy(date)) %>%
+  mutate(month_end = ceiling_date(date, unit = 'months')-1)
+
+us_deaths_cln = us_deaths %>%
+  pivot_longer( cols = -c(UID, iso2, iso3, code3, FIPS, Admin2, Province_State, Country_Region, Lat, Long_, Combined_Key),
+                names_to = 'date',
+                values_to = 'deaths') %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(deaths = sum(deaths)) %>%
+  mutate(date = mdy(date)) %>%
+  select(Province_State, Country_Region, date, deaths)
+
+us_confirmed_cln = us_confirmed_cln %>%
+  left_join(us_deaths_cln)
+
+us = us_confirmed_cln %>%
+  filter(date == '2023-03-09') %>%
+  arrange(date)
+
+us_totals_by_day = us %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths))
+
+state_totals = us %>%
+  drop_na(cases) %>%
+  group_by(Province_State) %>%
+  summarise(cases = sum(cases), deaths = sum(deaths)) %>%
+  mutate(pct_deaths = round((deaths / cases * 100), 1)) %>%
+  filter(Province_State != 'Diamond Princess') %>%
+  left_join(state_pop) %>%
+  mutate(cases_per_capita = round(cases / Population,3)) %>%
+  arrange(desc(cases_per_capita)) %>%
+  drop_na(cases_per_capita)
+```
+
+
+### Exploratory Data Analysis
+```{r, echo=TRUE}
+top = head(state_totals,10)
+top_states = top$Province_State
+bottom = tail(state_totals, 10)
+bottom_states = bottom$Province_State
+
+top
+bottom
+
+top %>%
+  ggplot(aes(x = forcats::fct_reorder(Province_State, desc(cases_per_capita)),y=cases_per_capita)) +
+  geom_col(aes(fill=pct_deaths)) +
+  theme(legend.position = 'right', axis.text.x = element_text(angle=90)) +
+        labs(title='Top 10 States/Regions by Cases per Capita', y='COVID-19 Cases per Capita', x= 'State', fill='% deaths')
+
+bottom %>%
+  ggplot(aes(x = forcats::fct_reorder(Province_State, desc(cases_per_capita)),y=cases_per_capita)) +
+  geom_col(aes(fill=pct_deaths)) +
+  theme(legend.position = 'right', axis.text.x = element_text(angle=90)) +
+        labs(title='Bottom 10 States/Regions by Cases per Capita', y='COVID-19 Cases per Capita', x= 'State', fill='% deaths')
+
+```
+
+
+### Monthly Trends of COVID-19 Cases
+The below visualizations were created to show a side by side comparison of total case volumes for the States/Regions with the highest cases per capita and the lowest cases per capita.
+```{r}
+top_monthly_df = us_confirmed_cln %>%
+  filter(Province_State %in% top_states, 
+         date == month_end) %>%
+  mutate(type='top')
+
+bottom_monthly_df = us_confirmed_cln %>%
+  filter(Province_State %in% bottom_states, 
+         date == month_end) %>%
+  mutate(type='bottom')
+
+top_monthly_df %>%
+  ggplot(aes(x=month_end,y=cases, colour = Province_State)) +
+  geom_line() +
+  theme(legend.position = 'bottom',
+        axis.text.x = element_text(angle=90)) +
+        labs(title='COVID-19 Case Trends by States/Regions With Highest Cases per Capita', y='COVID-19 Cases')
+
+bottom_monthly_df %>%
+  ggplot(aes(x=month_end,y=cases, colour = Province_State)) +
+  geom_line() +
+  theme(legend.position = 'bottom',
+        axis.text.x = element_text(angle=90)) +
+        labs(title='COVID-19 Case Trends by States/Regions With Lowest Cases per Capita', y='COVID-19 Cases')
+
+merged = rbind(top_monthly_df, bottom_monthly_df)
+
+merged %>%
+  ggplot(aes(x=month_end,y=cases, colour = Province_State)) +
+  geom_line() +
+  facet_wrap(vars(type)) +
+        #guides(color = guide_legend(title = 'State/Region')) +
+  theme(legend.position = 'none',
+        axis.text.x = element_text(angle=90)) +
+        labs(title='COVID-19 Case Trends by States/Regions by Highest/Lowest Cases per Capita', y='COVID-19 Cases')
+```
+
+### Linear regression models to predict deaths based on cases and State/Region.
+```{r}
+top_small = top_monthly_df %>% ungroup() %>%
+  select(Province_State, cases, deaths, type)
+
+top_mod = lm(deaths ~ cases + Province_State, data = top_small)
+summary(top_mod)
+
+top_preds = top_small %>% mutate(pred = predict(top_mod))
+
+top_preds %>%
+  ggplot() +
+  geom_point(aes(x=cases, y = deaths), color = 'blue') +
+  geom_point(aes(x=cases, y = pred), color = 'red')
+
+```
+
+
+```{r}
+bottom_small = bottom_monthly_df %>% ungroup() %>%
+  select(Province_State, cases, deaths, type)
+
+bottom_mod = lm(deaths ~ cases + Province_State, data = bottom_small)
+summary(bottom_mod)
+
+bottom_preds = bottom_small %>% mutate(pred = predict(bottom_mod))
+
+bottom_preds %>%
+  ggplot() +
+  geom_point(aes(x=cases, y = deaths), color = 'blue') +
+  geom_point(aes(x=cases, y = pred), color = 'red')
+
+
+```
+
+```{r}
+
+merged = rbind(top_small, bottom_small)
+
+merged_mod = lm(deaths ~ cases + Province_State + type, data = merged)
+summary(merged_mod)
+
+merged_preds = merged %>% mutate(pred = predict(merged_mod))
+
+merged_preds %>%
+  ggplot() +
+  geom_point(aes(x=cases, y = deaths), color = 'blue') +
+  geom_point(aes(x=cases, y = pred), color = 'red')
+
+```
+

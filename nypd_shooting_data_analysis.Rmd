@@ -1,0 +1,255 @@
+---
+title: "NYPD Shooting Data Analysis"
+author: "Zach Ost"
+date: "6/11/2025"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+# Overview
+
+This analysis focuses on publicly available shooting data from the NYPD from 2006 to 2024. The primary purpose is to demonstrate proficiency with R programming, the use of R markdown documents, the knitting feature of these documents, and a general ability to transform and analyze data to extract meaning from it.
+
+Some of the major questions I hope to answer are:
+
+- What time of day do most shootings occur?
+- What time of year do most shootings occur?
+- Are there any boroughs that tend to have more shootings?
+- Have shootings increased or decreased over time?
+- Are there any boroughs that appear to show a different trend over time?
+- Which precincts caught perpetrators most or least often?
+
+In addition, a logistic regression model has been created to attempt to predict shooting fatality based on the various data points.
+
+More information on this data set (and other publicly available data) can be found at <https://catalog.data.gov>.
+
+R packages needed for this analysis:
+
+- library(tidyr)
+- library(dplyr)
+- library(ggplot2)
+- library(lubridate)
+- library(forcats)
+- library(caTools)
+- library(caret)
+- library(pROC)
+
+# Methods
+
+- Exploratory data analysis to create descriptive statistics and visualization
+- Logistic regression model used to predict shooting fatality
+
+# Conclusions
+
+The number of shootings has trended downward since 2006, with the exception of a large spike during the pandemic years of 2020 and 2021. Average shootings per year from 2006 to 2024 is 1,565. The downward trend is most pronounced in Brooklyn, whereas Staten Island was relatively flat and low volume. The most shootings occurred in Precinct 75 where 54.9% of perpetrators were caught compared to an average of 57% across all Precincts. Murder rates for each of the boroughs were similar where approximately 20% of shootings resulted in murder. Most shootings occur between the hours of 6pm to 6am and during summer months. A logistic regression model indicated that independent variables showing a significant relationship with a murder outcome are season, and location description, whereas borough, year and time of day were not significant.
+
+# Analysis
+
+### Read in data from public data source
+```{r nypd data source, echo=TRUE}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(forcats)
+library(caTools)
+library(caret)
+library(pROC)
+
+nypd = read.csv('https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD')
+```
+
+### Review data types and fields
+```{r}
+data = nypd
+head(data)
+```
+
+
+```{r}
+summary(data)
+```
+
+### Fix data types, transform, clean, and create helpful fields
+I've converted strings to factors where necessary, fixed dates, and created some fields related to the time of day that the crime occurred. Several null values are observed in fields related to the perpetrator and Lat/Lon so depending on the analysis and fields required, these will need to be considered and potentially removed or categorized as something like 'unknown' or 'other'.
+```{r}
+#data = nypd
+
+data = nypd %>%
+  mutate(DATE_TIME = paste(OCCUR_DATE, OCCUR_TIME)) %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE), 
+         OCCUR_HOUR = hour(as.POSIXct(OCCUR_TIME, format = "%H:%M:%S")),
+         DATE_TIME = mdy_hms(DATE_TIME)) %>%
+  mutate(MONTH_END = ceiling_date(OCCUR_DATE, 'month') - days(1),
+         MONTH = month(OCCUR_DATE),
+         YEAR = year(OCCUR_DATE)) %>%
+  mutate(SEASON = as.factor(ifelse(MONTH > 3 & MONTH < 10, 'SUMMER', 'NOT SUMMER'))) %>%
+  mutate_at(vars(BORO, LOC_OF_OCCUR_DESC, PRECINCT, JURISDICTION_CODE, LOC_CLASSFCTN_DESC, STATISTICAL_MURDER_FLAG, PERP_AGE_GROUP, PERP_SEX, PERP_RACE, VIC_AGE_GROUP, VIC_SEX, VIC_RACE), as.factor) %>%
+  mutate(DAY_NIGHT = as.factor(if_else(OCCUR_HOUR > 6 & OCCUR_HOUR < 18, 'Day', 'Night'))) %>%
+  mutate(CAUGHT = if_else((is.na(PERP_RACE)) | (PERP_RACE %in% c('UNKNOWN', '', '(null)')), 0, 1)) %>%
+  mutate(MURDER_FLAG = ifelse(STATISTICAL_MURDER_FLAG=='true',1,0)) %>%
+  dplyr::select(-c(LOCATION_DESC, X_COORD_CD, Y_COORD_CD, Lon_Lat, OCCUR_TIME))
+
+summary(data)
+```
+
+### Shooting trends over time
+```{r}
+paste('min date:', min(data$OCCUR_DATE))
+paste('max date:', max(data$OCCUR_DATE))
+
+# shootings per year and average shootings per year
+shootings_per_year = data %>% select(BORO, YEAR) %>% count(YEAR, name = 'SHOOTINGS')
+shootings_per_year
+
+shootings_per_year %>%
+  ggplot(aes(x=YEAR,y=SHOOTINGS)) +
+  geom_line(aes(color = SHOOTINGS)) +
+  theme(legend.position = 'right') +
+        labs(title='NYPD Data: Shootings Per Year', y=NULL)
+
+avg_shootings_per_year = mean(shootings_per_year$SHOOTINGS)
+paste('avg per year:', avg_shootings_per_year)
+
+# average shootings per year by borough
+shootings_per_year_per_boro = data %>% select(BORO, YEAR) %>% count(BORO, YEAR, name = 'SHOOTINGS')
+avg_shootings_per_year_per_boro = shootings_per_year_per_boro %>% group_by(BORO) %>% summarise(AVG_PER_YEAR = mean(SHOOTINGS))
+avg_shootings_per_year_per_boro
+
+shootings_per_year_per_boro %>%
+  ggplot(aes(x=YEAR,y=SHOOTINGS)) +
+  geom_line(aes(color = SHOOTINGS)) +
+  facet_wrap(vars(BORO)) + 
+  theme(legend.position = 'right') +
+        labs(title='NYPD Data: Shootings Per Year', y=NULL)
+
+
+
+
+```
+
+### Perpetrators caught vs not caught by Precinct
+This data shows the Precincts with the most and least number of shootings. I've also included the percentage of perpetrators which were caught. This determination was based on the perpetrator fields where 'Unknown', null, or blank values indicate that the perpetrator was not caught. The darker colors indicate a lower percentage of perpetrators which were caught. This could be the result of many factors that could be further researched such as staffing constraints, a wave of shootings, more evasive criminals, etc.
+```{r}
+# how often did the perpetrator get away?
+caught_df = data %>% select(CAUGHT) %>% count(CAUGHT)
+#caught_df
+caught = caught_df[caught_df$CAUGHT=='1',2]
+total = length(data$INCIDENT_KEY)
+
+paste0('Perpetrators were caught about ', round((caught/total)*100), '% of the time.')
+
+# did this differ based on precinct?
+caught_by_precinct = data %>% select(PRECINCT, CAUGHT) %>% group_by(PRECINCT) %>% summarise(CAUGHT=sum(CAUGHT),TOTAL=n()) %>%
+  mutate(PCT_CAUGHT = round((CAUGHT / TOTAL)*100, 1)) %>% select(PRECINCT, TOTAL, PCT_CAUGHT) %>% arrange(desc(TOTAL))
+head(caught_by_precinct)
+tail(caught_by_precinct)
+
+head(caught_by_precinct,20) %>%
+  ggplot(aes(x = forcats::fct_reorder(PRECINCT, desc(TOTAL)),y=TOTAL)) +
+  geom_col(aes(fill=PCT_CAUGHT)) +
+  theme(legend.position = 'right') +
+        labs(title='Most Shootings by Precinct', y='Shootings', x= 'Precinct', fill='% of Perpetrators Caught')
+
+tail(caught_by_precinct,20) %>%
+  ggplot(aes(x = forcats::fct_reorder(PRECINCT, desc(TOTAL)),y=TOTAL)) +
+  geom_col(aes(fill=PCT_CAUGHT)) +
+  theme(legend.position = 'right') +
+        labs(title='Least Shootings by Precinct', y='Shootings', x= 'Precinct', fill='% of Perpetrators Caught')
+```
+
+
+### Murder Percentage by borough
+The below data shows that the percentage of shootings that result in murder are similar across boroughs.
+```{r}
+# Fatal Shoot
+murders = data %>% select(BORO, STATISTICAL_MURDER_FLAG) %>% 
+  group_by(BORO) %>% mutate(TOTAL_SHOOTINGS = n()) %>% ungroup() %>%
+  #filter(STATISTICAL_MURDER_FLAG == 'true') %>%
+  group_by(BORO, STATISTICAL_MURDER_FLAG, TOTAL_SHOOTINGS) %>% summarise(SHOOTINGS = n()) %>% #mutate(NOT_MURDERS = SHOOTINGS - MURDERS) %>%
+  
+  mutate(PCT_OF_SHOOTINGS = round((SHOOTINGS / TOTAL_SHOOTINGS) * 100, 1)) #%>%
+  #select(-STATISTICAL_MURDER_FLAG) #%>%
+  #group_by(BORO)
+  
+murders
+
+murders %>%
+  ggplot(aes(x = BORO, y = SHOOTINGS, fill = STATISTICAL_MURDER_FLAG)) +
+  geom_col() +
+  geom_text(aes(y= SHOOTINGS* .65, label=paste0(PCT_OF_SHOOTINGS,'%'))) +
+  theme(legend.position = 'right') +
+        labs(title='Shootings by Borough & Murder Percentage', y='Shootings')
+  
+```
+### Time of Day
+The below charts show a trend of the time of day shooting occur. Most shootings happen at night where 'night' is defined as between 6pm and 6am.
+```{r}
+crimes_by_time_of_day = data %>%
+  select(OCCUR_HOUR) %>%
+  count(OCCUR_HOUR)
+
+crimes_by_time_of_day %>%
+  ggplot(aes(x=OCCUR_HOUR,y=n)) +
+  geom_line(aes(color = n)) +
+  theme(legend.position = 'right') +
+        labs(title='Shootings by Time of Day', y=NULL)
+
+plot(data$DAY_NIGHT)
+```
+
+### Seasonality
+The below chart shows that there is a seasonal effect to the shootings. It's also interesting to note a very high peak around the time of the COVID19 pandemic.
+```{r}
+crimes_per_month = data %>%
+  select(MONTH_END) %>% 
+  count(MONTH_END) %>%
+  mutate(Season = ifelse(month(MONTH_END)>4 & month(MONTH_END)<10, 'SUMMER','NOT SUMMER'),
+         YEAR = year(MONTH_END))
+
+crimes_per_month %>%
+  ggplot(aes(x=MONTH_END,y=n)) +
+  geom_line(aes(color = n)) +
+  theme(legend.position = 'right') +
+        labs(title='Shootings Per Month', y=NULL) #+
+  #scale_y_continuous(breaks = seq(2010, 2025,1))
+
+plot(data$SEASON)
+```
+
+### Logistic regression model to predict shooting fatality
+A logistic regression model creates probabilities of an outcome. Below I've fit a logistic regression model on a training set of data to predict whether or not a shooting is fatal and resulted in murder. The model summary indicates that of the independent variables I've used, season and location description are significantly related to the outcome. Shootings not during the summer and in a dwelling or vehicle tend to have a higher probability of resulting in a murder. The performance metrics of this model indicate that further refinement may be needed, as ideally, the AUC should be closer to 1 than the resulting AUC of 0.51.
+
+```{r}
+
+set.seed(seed=1)
+split = sample.split(data, SplitRatio = .8)
+
+train <- subset(data, split == "TRUE")
+test <- subset(data, split == "FALSE")
+
+mod = glm(MURDER_FLAG ~ YEAR + MONTH_END + SEASON + OCCUR_HOUR + BORO + LOC_CLASSFCTN_DESC, data = train, family='binomial')
+
+summary(mod)
+
+fitted = predict(mod, test, type = 'response')
+pred = ifelse(fitted>.5, 1, 0)
+
+xtab = table(test$MURDER_FLAG, pred)
+
+confusionMatrix(xtab)
+
+auc(test$STATISTICAL_MURDER_FLAG, fitted)
+
+```
+
+
+## Bias Considerations
+One potential source of bias is based on Race, Sex, or location. Everyone has a race and sex, and may even live in one of these areas. This data set includes racial, sex, and borough variables, so an analyst should first consider any biases related to these variables in an analysis. My analysis focused mostly on when shootings occur and murder and capture rates rather than race or sex, which avoids bias related to those. Inevitably any analysis on race or gender of the perpetrators or victims will need to consider how bias may be reflected in any results.
+
