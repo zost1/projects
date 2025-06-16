@@ -188,6 +188,7 @@ murders %>%
         labs(title='Shootings by Borough & Murder Percentage', y='Shootings')
   
 ```
+
 ### Time of Day
 The below charts show a trend of the time of day shooting occur. Most shootings happen at night where 'night' is defined as between 6pm and 6am.
 ```{r}
@@ -251,5 +252,5 @@ auc(test$STATISTICAL_MURDER_FLAG, fitted)
 
 
 ## Bias Considerations
-One potential source of bias is based on Race, Sex, or location. Everyone has a race and sex, and may even live in one of these areas. This data set includes racial, sex, and borough variables, so an analyst should first consider any biases related to these variables in an analysis. My analysis focused mostly on when shootings occur and murder and capture rates rather than race or sex, which avoids bias related to those. Inevitably any analysis on race or gender of the perpetrators or victims will need to consider how bias may be reflected in any results.
+One potential source of bias is based on Race, Sex, or location. Everyone has a race and sex, and may even live in one of these areas. This data set includes racial, sex, and borough variables, so an analyst should first consider any biases related to these variables in an analysis. My analysis focused mostly on when shootings occur and murder and capture rates rather than race or sex, which avoids bias related to those. Inevitably any analysis on race or gender of the perpetrators or victims will need to consider how bias may be reflected in any results. An example of a biased result would be drawing a conclusion that 'The only people that shoot others in a specific area are a specific race'. If the analysis doesn't also mention that everyone that lives in that area is also of that same race, then this would not be fair and would be misleading.
 
